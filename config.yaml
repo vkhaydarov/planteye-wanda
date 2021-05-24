@@ -2,8 +2,7 @@
 dataverse:
   endpoint: https://demo.dataverse.org
   token: ac387b5c-0f41-4a75-9285-d88ca0db5446
-  dataverse_name: planteye
-  dataset_name: test_2021-05-16
-  upload_interval: 5000
+  dataset_pid: doi:10.70122/FK2/73AJNM
+  read_upload_interval: 2000
 vision:
   endpoint: http://127.0.0.1:5000/

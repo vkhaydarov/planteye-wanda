@@ -1,6 +1,7 @@
-from src.dataverse_writer import DataverseWriter
+from src.dataverse_writer import DataverseWriter, DatasetEntity, Dataset
 from yaml import safe_load
 import logging
+import time
 
 
 if __name__ == '__main__':
@@ -17,3 +18,8 @@ if __name__ == '__main__':
     #   exit(1)
     dv_writer = DataverseWriter(cfg)
     dv_writer.start()
+
+    #dv_dataset = Dataset()
+    #dv_entity = DatasetEntity(datatype='image/png', data=open('image.png'), metadata={'filename': 'test.png', 'description': time.time()})
+    #dv_entity.upload(api_endpoint='https://demo.dataverse.org', api_key='ac387b5c-0f41-4a75-9285-d88ca0db5446', persistent_id='doi:10.70122/FK2/73AJNM')
+    #print(open('image.png'))
