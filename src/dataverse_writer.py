@@ -5,7 +5,7 @@ import numpy as np
 import cv2
 from pyDataverse import api, models
 import json
-import time
+from time import time, sleep
 import threading
 
 
@@ -26,12 +26,15 @@ class DataverseWriter:
         ret = self._connect_to_dataset()
         if not ret:
             return
-        self._get_and_upload_thread = threading.Thread(target=self._get_and_upload_data, args=[])
-        self._get_and_upload_thread.start()
+        self._receive_thread = threading.Thread(target=self._receive_data, args=[])
+        self._receive_thread.start()
+
+        self._upload_thread = threading.Thread(target=self._upload_data, args=[])
+        self._upload_thread.start()
 
     def stop(self):
         self._stop = True
-        time.sleep(self.cfg['dataverse']['read_upload_interval'] / 1000.0)
+        sleep(self.cfg['dataverse']['read_upload_interval'] / 1000.0)
 
     def _connect_dataverse(self):
         self._dv_connection = api.NativeApi(self.cfg['dataverse']['endpoint'], self.cfg['dataverse']['token'])
@@ -51,80 +54,143 @@ class DataverseWriter:
         resp = api.NativeApi.create_dataset(self._dv_connection, self.cfg['dataverse']['dataverse_name'], ds.json())
         print(resp)
 
-    def _get_and_upload_data(self):
+    def _receive_data(self):
 
         # Set initial time point
-        cycle_begin = time.time() - self.cfg['dataverse']['read_upload_interval'] / 1000.0
+        cycle_begin = time() - self.cfg['vision']['read_interval'] / 1000.0
 
         while not self._stop:
 
-            logging.info('Loop step')
+            logging.info('Receive data loop')
 
             # Calculate one cycle length
-            cycle_begin = cycle_begin + self.cfg['dataverse']['read_upload_interval'] / 1000.0
+            cycle_begin = cycle_begin + self.cfg['vision']['read_interval'] / 1000.0
 
             # If last cycle lasted much longer, we need to skip the current polling cycle to catch up in the future
-            if cycle_begin + 0.010 < time.time():
-                logging.error('Reading and uploading skipped (increase time interval)')
+            if cycle_begin + 0.010 < time():
+                logging.error('Reading skipped (consider increasing read interval)')
                 continue
 
-            received_data = self._get_data_from_api()
-            frame_bytes = base64.b64decode(received_data['frame']['frame'])
-            metadata = received_data['metadata']
-            timestamp = received_data['timestamp']
+            begin_time = time()
+            frame_received, frame_data = self._get_data_from_api()
+            read_time = int((time() - begin_time) * 1000)
 
-            data_entity = DatasetEntity(self.dataset, 'image/png', frame_bytes, metadata, timestamp)
-            self.dataset.add(data_entity)
-            self.dataset.upload()
+            if frame_received:
+                logging.info('Frame received')
+                begin_time = time()
+                frame_bytes = base64.b64decode(frame_data['frame']['frame'])
+                metadata = frame_data['metadata']
+                timestamp = frame_data['timestamp']
+                decode_time = int((time() - begin_time) * 1000)
 
-            if self._stop:
-                break
+                begin_time = time()
+                data_entity = DatasetEntity(self.dataset, 'image/png', frame_bytes, metadata, timestamp)
+                instance_time = int((time() - begin_time) * 1000)
+
+                begin_time = time()
+                self.dataset.add(data_entity)
+                add_point_time = int((time() - begin_time) * 1000)
+            else:
+                logging.warning('Frame NOT received')
+                decode_time = 0
+                instance_time = 0
+                add_point_time = 0
+
+            total_time = int((time() - cycle_begin) * 1000)
+            debug_str = 'Total execution time of receiving frame %i ms (data receiving %i, decoding %i, creating instance %i, adding to buffer %i)' \
+                        % (total_time, read_time, decode_time, instance_time, add_point_time)
+            logging.debug(debug_str)
 
             # Calculate real cycle duration
-            cycle_dur = time.time() - cycle_begin
+            cycle_dur = time() - cycle_begin
 
             # If the cycle duration longer than given and no connection issues, jump directly to the next cycle
-            if cycle_dur > self.cfg['dataverse']['read_upload_interval']:
-                logging.warning('Reading and uploading takes longer ' + str(cycle_dur) + ' than given time intervals')
+            if cycle_dur > self.cfg['vision']['read_interval']:
+                logging.warning('Reading takes longer ' + str(cycle_dur) + ' than given time intervals')
             else:
                 # Calculate how long we need to wait till the begin of the next cycle
-                time.sleep(max(self.cfg['dataverse']['read_upload_interval'] / 1000.0 - (time.time() - cycle_begin), 0))
+                sleep(max(self.cfg['vision']['read_interval'] / 1000.0 - (time() - cycle_begin), 0))
+
+    def _upload_data(self):
+        # Set initial time point
+        cycle_begin = time() - self.cfg['dataverse']['upload_interval'] / 1000.0
+
+        while not self._stop:
+
+            logging.info('Upload loop')
+
+            # Calculate one cycle length
+            cycle_begin = cycle_begin + self.cfg['dataverse']['upload_interval'] / 1000.0
+
+            # If last cycle lasted much longer, we need to skip the current polling cycle to catch up in the future
+            if cycle_begin + 0.010 < time():
+                logging.error('Uploading skipped (increase time interval)')
+                continue
+
+            begin_time = time()
+            _, uploaded_items = self.dataset.upload()
+            upload_time = int((time() - begin_time) * 1000)
+            logging.info('Uploading skipped (increase time interval)')
+            logging.debug('Total execution time of uploading %i frames %i ms' % (uploaded_items,  upload_time))
+
+            # Calculate real cycle duration
+            cycle_dur = time() - cycle_begin
+
+            # If the cycle duration longer than given and no connection issues, jump directly to the next cycle
+            if cycle_dur > self.cfg['dataverse']['upload_interval']:
+                logging.warning('Uploading takes longer ' + str(cycle_dur) + ' than given time intervals')
+            else:
+                # Calculate how long we need to wait till the begin of the next cycle
+                sleep(max(self.cfg['dataverse']['upload_interval'] / 1000.0 - (time() - cycle_begin), 0))
 
     def _get_data_from_api(self):
-        api_endpoint = self.cfg['vision']['endpoint'] + '/get_frame'
+        api_endpoint = self.cfg['vision']['endpoint'] + 'get_frame'
         try:
-            response = requests.get(api_endpoint)
+            resp = requests.get(api_endpoint)
         except requests.exceptions.ConnectionError:
             logging.error('Cannot establish connection to ' + self.cfg['vision']['endpoint'])
-            return None
+            return False, None
 
-        resp_data = response.json()
-
-        if resp_data['status']['code'] == 500:
-            logging.warning('No frame retrieved. API returned message: ' + resp_data['status']['message'])
-            return None
+        try:
+            resp_data = resp.json()
+        except Exception:
+            logging.warning('Cannot deserialise received json %s' % resp_data)
+            return False, None
 
         if resp_data['status']['code'] == 200:
             logging.info('Frame received')
-
-        return resp_data
+            return True, resp_data
+        else:
+            logging.warning('No frame retrieved. Error %s API returned message %s'
+                            % (resp_data['status']['code'], resp_data['status']['message']))
+            return False, None
 
 
 class Dataset:
-    def __init__(self, api_endpoint, api_key, persistent_id):
+    def __init__(self, api_endpoint, api_key, persistent_id, max_size=100):
         self.api_endpoint = api_endpoint
         self.api_key = api_key
         self.persistent_id = persistent_id
         self.entities = []
+        self.max_size = max_size
 
     def add(self, new_entity):
+        if len(self.entities) >= 100:
+            self.entities.pop(0)
         self.entities.append(new_entity)
 
     def upload(self):
-        for entity in reversed(self.entities):
-            res = entity.upload()
-            if res:
-                self.entities.pop()
+        ds_len = len(self.entities)
+        if ds_len > 0:
+            ds_uploaded = 0
+            for entity in reversed(self.entities):
+                res = entity.upload()
+                if res:
+                    self.entities.pop()
+                    ds_uploaded += 1
+            return True, ds_uploaded
+        else:
+            return False, 0
 
 
 class DatasetEntity:
@@ -152,15 +218,10 @@ class DatasetEntity:
 
         payload = self._form_request_data()
         files = self._form_request_file()
-
-        #print('-' * 40)
-        #print('making request: %s' % url_persistent_id)
+        begin_time = time()
         r = requests.post(url_persistent_id, data=payload, files=files)
-        #print(payload)
-        #print(files)
-        #print('-' * 40)
-        #print(r.json())
-        #print(r.status_code)
+        upload_time = int((time()-begin_time)*1000)
+        logging.debug('Upload time of one frame %i ms' % upload_time)
         if r.status_code == 200:
             logging.info('Entity successfully uploaded on cloud')
             return True
