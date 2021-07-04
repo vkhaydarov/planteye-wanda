@@ -43,11 +43,17 @@ class DataverseWriter:
         return True
 
     def _connect_to_dataset(self):
-        self.dataset = Dataset(self.cfg['dataverse']['endpoint'], self.cfg['dataverse']['token'], self.cfg['dataverse']['dataset_pid'])
+        self.dataset = Dataset(self.cfg['dataverse']['endpoint'], self.cfg['dataverse']['token'],
+                               self.cfg['dataverse']['dataset_pid'])
         return True
 
     def _create_dataset(self, data):
-        data = {'citation_displayName': 'Citation Metadata', 'title': 'Youth in Austria 2005', 'author': [{'authorName': 'LastAuthor1, FirstAuthor1', 'authorAffiliation': 'AuthorAffiliation1'}], 'datasetContact': [{'datasetContactEmail': 'ContactEmail1@mailinator.com', 'datasetContactName': 'LastContact1, FirstContact1'}], 'dsDescription': [{'dsDescriptionValue': 'DescriptionText'}], 'subject': ['Medicine, Health and Life Sciences']}
+        data = {'citation_displayName': 'Citation Metadata', 'title': 'Youth in Austria 2005',
+                'author': [{'authorName': 'LastAuthor1, FirstAuthor1', 'authorAffiliation': 'AuthorAffiliation1'}],
+                'datasetContact': [{'datasetContactEmail': 'ContactEmail1@mailinator.com',
+                                    'datasetContactName': 'LastContact1, FirstContact1'}],
+                'dsDescription': [{'dsDescriptionValue': 'DescriptionText'}],
+                'subject': ['Medicine, Health and Life Sciences']}
         ds = models.Dataset(data=data)
         if not ds.validate_json():
             logging.error('Invalid data for dataset')
@@ -131,7 +137,7 @@ class DataverseWriter:
             _, uploaded_items = self.dataset.upload()
             upload_time = int((time() - begin_time) * 1000)
             logging.info('Uploading skipped (increase time interval)')
-            logging.debug('Total execution time of uploading %i frames %i ms' % (uploaded_items,  upload_time))
+            logging.debug('Total execution time of uploading %i frames %i ms' % (uploaded_items, upload_time))
 
             # Calculate real cycle duration
             cycle_dur = time() - cycle_begin
@@ -194,38 +200,52 @@ class Dataset:
 
 
 class DatasetEntity:
-    def __init__(self, dataset, datatype, data, metadata, timestamp):
+    def __init__(self, dataset, datatype, image_data, metadata, timestamp):
         self.dataset = dataset
         self.datatype = datatype
-        self.data = data
+        self.image_data = image_data
         self.metadata = metadata
         self.timestamp = timestamp
 
-    def _form_request_data(self):
-        return dict(jsonData=json.dumps(self.metadata))
+    def upload_file_dataverse(self, file, payload):
+        url_persistent_id = '%s/api/datasets/:persistentId/add?persistentId=%s&key=%s' % (
+            self.dataset.api_endpoint, self.dataset.persistent_id, self.dataset.api_key)
 
-    def _form_request_file(self):
-        if self.datatype == 'image/png':
-            filename = 'frame%i.png' % self.timestamp
-        return {'file': (filename, self.data, self.datatype)}
+        resp = requests.post(url_persistent_id, data=payload, files=file)
+
+        if resp.status_code == 200:
+            logging.info('File %s successfully uploaded on cloud' % file['file'][0])
+        else:
+            logging.warning('File %s could not be uploaded on cloud %i %s ' % (file['file'][0], resp.status_code, resp.text))
+
+        return resp
 
     def upload(self):
-        api_endpoint = self.dataset.api_endpoint
-        api_key = self.dataset.api_key
-        persistent_id = self.dataset.persistent_id
+        add_pars = {'description': 'Description test', 'directoryLabel': str(self.timestamp)}
+        payload = {'jsonData': json.dumps(add_pars)}
 
-        url_persistent_id = '%s/api/datasets/:persistentId/add?persistentId=%s&key=%s' % (api_endpoint, persistent_id, api_key)
+        if self.datatype == 'image/png':
+            filename_frame = '%i.png' % self.timestamp
+        file_frame = {'file': (filename_frame, self.image_data, self.datatype)}
 
-        payload = self._form_request_data()
-        files = self._form_request_file()
         begin_time = time()
-        r = requests.post(url_persistent_id, data=payload, files=files)
-        upload_time = int((time()-begin_time)*1000)
-        logging.debug('Upload time of one frame %i ms' % upload_time)
-        if r.status_code == 200:
-            logging.info('Entity successfully uploaded on cloud')
-            return True
-        else:
-            logging.warning('Entity could not be uploaded on cloud')
+        status = self.upload_file_dataverse(file_frame, payload)
+        upload_time = int((time() - begin_time) * 1000)
+        logging.debug('Upload time of frame file %i ms' % upload_time)
+
+        if status.status_code != 200:
             return False
+
+        begin_time = time()
+        filename_metadata = '%i.json' % self.timestamp
+        metadata_dump = json.dumps(self.metadata, sort_keys=True, indent=4)
+        file_metadata = {'file': (filename_metadata, metadata_dump, 'application/json')}
+        status = self.upload_file_dataverse(file_metadata, payload)
+
+        if status.status_code != 200:
+            return False
+
+        upload_time = int((time() - begin_time) * 1000)
+        logging.debug('Upload time of metadata file %i ms' % upload_time)
+        return True
 
