@@ -86,11 +86,12 @@ class DataverseWriter:
                 begin_time = time()
                 frame_bytes = base64.b64decode(frame_data['frame']['frame'])
                 metadata = frame_data['metadata']
+                labels = frame_data['labels']
                 timestamp = frame_data['timestamp']
                 decode_time = int((time() - begin_time) * 1000)
-
                 begin_time = time()
-                data_entity = DatasetEntity(self.dataset, 'image/png', frame_bytes, metadata, timestamp)
+                data_entity = DatasetEntity(self.dataset, 'image/png', frame=frame_bytes,
+                                            metadata=metadata, labels=labels, timestamp=timestamp)
                 instance_time = int((time() - begin_time) * 1000)
 
                 begin_time = time()
@@ -200,11 +201,12 @@ class Dataset:
 
 
 class DatasetEntity:
-    def __init__(self, dataset, datatype, image_data, metadata, timestamp):
+    def __init__(self, dataset, datatype, frame, metadata, labels, timestamp):
         self.dataset = dataset
         self.datatype = datatype
-        self.image_data = image_data
+        self.image_data = frame
         self.metadata = metadata
+        self.labels = labels
         self.timestamp = timestamp
 
     def upload_file_dataverse(self, file, payload):
@@ -216,7 +218,8 @@ class DatasetEntity:
         if resp.status_code == 200:
             logging.info('File %s successfully uploaded on cloud' % file['file'][0])
         else:
-            logging.warning('File %s could not be uploaded on cloud %i %s ' % (file['file'][0], resp.status_code, resp.text))
+            logging.warning(
+                'File %s could not be uploaded on cloud %i %s ' % (file['file'][0], resp.status_code, resp.text))
 
         return resp
 
@@ -238,7 +241,7 @@ class DatasetEntity:
 
         begin_time = time()
         filename_metadata = '%i.json' % self.timestamp
-        metadata_dump = json.dumps(self.metadata, sort_keys=True, indent=4)
+        metadata_dump = json.dumps({'metadata': self.metadata, 'labels': self.labels}, sort_keys=True, indent=4)
         file_metadata = {'file': (filename_metadata, metadata_dump, 'application/json')}
         status = self.upload_file_dataverse(file_metadata, payload)
 
@@ -248,4 +251,3 @@ class DatasetEntity:
         upload_time = int((time() - begin_time) * 1000)
         logging.debug('Upload time of metadata file %i ms' % upload_time)
         return True
-
